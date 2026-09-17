@@ -24,8 +24,8 @@
 ## Установка
 
 ```bash
-cd /opt && git clone https://github.com/dnrshtnk/Remnawave-Routing-update.git
-cd /opt/Remnawave-Routing-update
+git clone https://github.com/dnrshtnk/Remnawave-Routing-update.git
+mv Remnawave-Routing-update/ /opt/ && cd /opt/Remnawave-Routing-update
 cp .env.example .env
 nano .env
 ```
