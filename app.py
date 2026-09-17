@@ -547,9 +547,12 @@ def update_subscription_settings(
         log.warning("DRY_RUN: subscription settings were not changed")
         return
 
-    backup_path = backup_json(original_settings, config, "subscription-settings")
-    log.info("Backup written to %s", backup_path)
-    
+    try:
+        backup_path = backup_json(original_settings, config, "subscription-settings")
+        log.info("Backup written to %s", backup_path)
+    except Exception as exc:
+        log.warning("Failed to write backup: %s", exc)
+        
     payload = {"uuid": settings.get("uuid")}
     if config.update_global and config.global_url:
         payload["customResponseHeaders"] = settings.get("customResponseHeaders")
@@ -585,8 +588,12 @@ def update_squad(
         log.warning("DRY_RUN: squad %s was not changed (%s)", squad.uuid, reason)
         return
 
-    backup_path = backup_json(data, config, f"squad-{squad.uuid}")
-    log.info("Squad %s backup written to %s", squad.uuid, backup_path)
+    try:
+        backup_path = backup_json(data, config, f"squad-{squad.uuid}")
+        log.info("Squad %s backup written to %s", squad.uuid, backup_path)
+    except Exception as exc:
+        log.warning("Failed to write backup for squad %s: %s", squad.uuid, exc)
+        
     original_remove = data.get("responseHeadersRemove") or []
     remove = [
         str(item)
