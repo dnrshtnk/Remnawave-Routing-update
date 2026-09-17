@@ -26,7 +26,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 ROUTING_HEADER = "routing"
-DEEPLINK_RE = re.compile(r"^happ://routing/(?:add|onadd)/([A-Za-z0-9+/=]+)$")
+DEEPLINK_RE = re.compile(r"^[a-z0-9-]+://routing/(?:add|onadd)/([A-Za-z0-9+/=]+)$", re.IGNORECASE)
 DEFAULT_GITHUB_RAW_URL = (
     "https://raw.githubusercontent.com/indie-master/happ-routing/"
     "main/HAPP/DEFAULT.DEEPLINK"
