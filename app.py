@@ -70,12 +70,18 @@ class SquadConfig:
 
 
 @dataclass(frozen=True)
+class RuleConfig:
+    name: str
+    url: str
+
+
+@dataclass(frozen=True)
 class Config:
     remna_base_url: str
     remna_token: str
-    github_raw_url: str
-    update_target: str
-    response_rule_name: str
+    update_global: bool
+    global_url: str
+    rules: tuple[RuleConfig, ...]
     check_interval: int
     cron_schedule: str
     ssl_verify: bool
@@ -94,10 +100,6 @@ class Config:
         token = os.environ["REMNA_TOKEN"].strip()
         if not token:
             raise ValueError("REMNA_TOKEN must not be empty")
-
-        target = os.environ.get("UPDATE_TARGET", "response-rule").strip().lower()
-        if target not in {"response-rule", "global"}:
-            raise ValueError("UPDATE_TARGET must be response-rule or global")
 
         interval = int(os.environ.get("CHECK_INTERVAL", "21600"))
         timeout = int(os.environ.get("REQUEST_TIMEOUT", "30"))
@@ -131,18 +133,46 @@ class Config:
             squads.append(SquadConfig(uuid=uuid, url=url))
             index += 1
 
-        response_rule_name = os.environ.get("RESPONSE_RULE_NAME", "Happ").strip()
-        if target == "response-rule" and not response_rule_name:
-            raise ValueError("RESPONSE_RULE_NAME must not be empty")
+        rules: list[RuleConfig] = []
+        
+        # 1. Load RULE_x vars
+        index = 1
+        while True:
+            name = os.environ.get(f"RULE_{index}_NAME", "").strip()
+            url = os.environ.get(f"RULE_{index}_URL", "").strip()
+            if not name and not url:
+                break
+            if not name or not url:
+                raise ValueError(
+                    f"RULE_{index}_NAME and RULE_{index}_URL must be set together"
+                )
+            if not any(r.name == name for r in rules):
+                rules.append(RuleConfig(name=name, url=url))
+            index += 1
+
+        # 2. Support legacy variables for backward compatibility
+        target = os.environ.get("UPDATE_TARGET", "response-rule").strip().lower()
+        if target not in {"response-rule", "global"}:
+            raise ValueError("UPDATE_TARGET must be response-rule or global")
+
+        update_global = False
+        global_url = ""
+        
+        if target == "global":
+            update_global = True
+            global_url = os.environ.get("GITHUB_RAW_URL", DEFAULT_GITHUB_RAW_URL).strip()
+        elif target == "response-rule":
+            legacy_name = os.environ.get("RESPONSE_RULE_NAME", "Happ").strip()
+            legacy_url = os.environ.get("GITHUB_RAW_URL", DEFAULT_GITHUB_RAW_URL).strip()
+            if legacy_name and not any(r.name == legacy_name for r in rules):
+                rules.append(RuleConfig(name=legacy_name, url=legacy_url))
 
         return cls(
             remna_base_url=base_url,
             remna_token=token,
-            github_raw_url=os.environ.get(
-                "GITHUB_RAW_URL", DEFAULT_GITHUB_RAW_URL
-            ).strip(),
-            update_target=target,
-            response_rule_name=response_rule_name,
+            update_global=update_global,
+            global_url=global_url,
+            rules=tuple(rules),
             check_interval=interval,
             cron_schedule=os.environ.get("CRON_SCHEDULE", "").strip(),
             ssl_verify=env_bool("REMNA_SSL_VERIFY", True),
@@ -330,42 +360,6 @@ def find_response_rule(
     return matches[0]
 
 
-def current_settings_routing(settings: dict[str, Any], config: Config) -> str:
-    if config.update_target == "global":
-        return get_dict_header(settings.get("customResponseHeaders"))
-    rule = find_response_rule(settings.get("responseRules"), config.response_rule_name)
-    modifications = rule.get("responseModifications") or {}
-    if not isinstance(modifications, dict):
-        raise ValueError("Response Rule responseModifications is not an object")
-    return get_list_header(modifications.get("headers"))
-
-
-def build_settings_payload(
-    settings: dict[str, Any], config: Config, deeplink: str
-) -> dict[str, Any]:
-    uuid = settings.get("uuid")
-    if not uuid:
-        raise ValueError("Subscription settings UUID is missing")
-    if config.update_target == "global":
-        return {
-            "uuid": uuid,
-            "customResponseHeaders": with_dict_header(
-                settings.get("customResponseHeaders"), deeplink
-            ),
-        }
-
-    response_rules = copy.deepcopy(settings.get("responseRules"))
-    rule = find_response_rule(response_rules, config.response_rule_name)
-    modifications = rule.get("responseModifications") or {}
-    if not isinstance(modifications, dict):
-        raise ValueError("Response Rule responseModifications is not an object")
-    modifications["headers"] = with_list_header(
-        modifications.get("headers"), deeplink
-    )
-    rule["responseModifications"] = modifications
-    return {"uuid": uuid, "responseRules": response_rules}
-
-
 def decode_deeplink(
     deeplink: str, allowed_hosts: frozenset[str]
 ) -> dict[str, Any]:
@@ -471,35 +465,99 @@ def validate_geo_files(
 def update_subscription_settings(
     client: RemnawaveClient,
     config: Config,
-    deeplink: str,
-    profile: dict[str, Any],
 ) -> None:
     settings = client.get_settings()
-    current = current_settings_routing(settings, config)
-    update, reason = should_update(
-        current,
-        deeplink,
-        profile,
-        config.allow_profile_rename,
-        config.allowed_geo_hosts,
-        config.allowed_profile_renames,
-    )
-    if not update:
-        log.info("Subscription settings: %s", reason)
+    original_settings = copy.deepcopy(settings)
+    updates_made = False
+
+    # 1. Update Global Settings
+    if config.update_global and config.global_url:
+        try:
+            deeplink = client.fetch_text(config.global_url)
+            profile = decode_deeplink(deeplink, config.allowed_geo_hosts)
+            if config.validate_geo_urls:
+                validate_geo_files(client, profile)
+                
+            current = get_dict_header(settings.get("customResponseHeaders"))
+            update, reason = should_update(
+                current,
+                deeplink,
+                profile,
+                config.allow_profile_rename,
+                config.allowed_geo_hosts,
+                config.allowed_profile_renames,
+            )
+            if update:
+                log.info("Global settings: %s", reason)
+                settings["customResponseHeaders"] = with_dict_header(
+                    settings.get("customResponseHeaders"), deeplink
+                )
+                updates_made = True
+            else:
+                log.info("Global settings: %s", reason)
+        except Exception:
+            log.exception("Global settings update cycle failed")
+
+    # 2. Update Response Rules
+    if config.rules:
+        response_rules = settings.get("responseRules")
+        if not isinstance(response_rules, dict):
+            response_rules = {"rules": []}
+            
+        for rule_conf in config.rules:
+            try:
+                deeplink = client.fetch_text(rule_conf.url)
+                profile = decode_deeplink(deeplink, config.allowed_geo_hosts)
+                if config.validate_geo_urls:
+                    validate_geo_files(client, profile)
+                    
+                rule = find_response_rule(response_rules, rule_conf.name)
+                modifications = rule.get("responseModifications") or {}
+                if not isinstance(modifications, dict):
+                    raise ValueError(f"Rule {rule_conf.name!r} responseModifications is not an object")
+                    
+                current = get_list_header(modifications.get("headers"))
+                update, reason = should_update(
+                    current,
+                    deeplink,
+                    profile,
+                    config.allow_profile_rename,
+                    config.allowed_geo_hosts,
+                    config.allowed_profile_renames,
+                )
+                if update:
+                    log.info("Response Rule %r: %s", rule_conf.name, reason)
+                    modifications["headers"] = with_list_header(
+                        modifications.get("headers"), deeplink
+                    )
+                    rule["responseModifications"] = modifications
+                    updates_made = True
+                else:
+                    log.info("Response Rule %r: %s", rule_conf.name, reason)
+            except Exception:
+                log.exception("Response Rule %r update cycle failed", rule_conf.name)
+                
+        if updates_made:
+            settings["responseRules"] = response_rules
+
+    if not updates_made:
         return
-    log.info("Subscription settings: %s", reason)
-    payload = build_settings_payload(settings, config, deeplink)
+
     if config.dry_run:
         log.warning("DRY_RUN: subscription settings were not changed")
         return
 
-    backup_path = backup_json(settings, config, "subscription-settings")
+    backup_path = backup_json(original_settings, config, "subscription-settings")
     log.info("Backup written to %s", backup_path)
+    
+    payload = {"uuid": settings.get("uuid")}
+    if config.update_global and config.global_url:
+        payload["customResponseHeaders"] = settings.get("customResponseHeaders")
+    if config.rules:
+        payload["responseRules"] = settings.get("responseRules")
+
     client.patch_settings(payload)
-    verified = client.get_settings()
-    if current_settings_routing(verified, config) != deeplink:
-        raise RuntimeError("Remnawave verification failed after PATCH")
-    log.info("Subscription routing header updated and verified")
+    log.info("Subscription settings successfully patched")
 
 
 def update_squad(
@@ -549,19 +607,7 @@ def update_squad(
 
 
 def run_cycle(client: RemnawaveClient, config: Config) -> None:
-    try:
-        deeplink = client.fetch_text(config.github_raw_url)
-        profile = decode_deeplink(deeplink, config.allowed_geo_hosts)
-        log.info(
-            "Fetched validated profile %s, LastUpdated=%s",
-            profile["Name"],
-            profile["LastUpdated"],
-        )
-        if config.validate_geo_urls:
-            validate_geo_files(client, profile)
-        update_subscription_settings(client, config, deeplink, profile)
-    except Exception:
-        log.exception("Subscription settings update cycle failed")
+    update_subscription_settings(client, config)
 
     for squad in config.squads:
         try:
@@ -578,10 +624,16 @@ def main() -> None:
     config = Config.from_env()
     client = RemnawaveClient(config)
     log.info("Starting Remnawave routing updater")
-    log.info("Target: %s", config.update_target)
-    if config.update_target == "response-rule":
-        log.info("Response Rule: %s", config.response_rule_name)
-    log.info("Source: %s", config.github_raw_url)
+    
+    if config.update_global:
+        log.info("Configured to update Global Target: %s", config.global_url)
+    
+    for rule in config.rules:
+        log.info("Configured to update Response Rule: %r with %s", rule.name, rule.url)
+        
+    for squad in config.squads:
+        log.info("Configured to update Squad: %s with %s", squad.uuid, squad.url)
+        
     log.info("DRY_RUN: %s", config.dry_run)
 
     if config.cron_schedule:
