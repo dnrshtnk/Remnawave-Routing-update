@@ -24,8 +24,8 @@
 ## Установка
 
 ```bash
-git clone https://github.com/dnrshtnk/Remnawave-Routing-update.git
-cd Remnawave-Routing-update
+cd /opt && git clone https://github.com/dnrshtnk/Remnawave-Routing-update.git
+cd /opt/Remnawave-Routing-update
 cp .env.example .env
 nano .env
 ```
@@ -55,7 +55,7 @@ VALIDATE_GEO_URLS=true
 ALLOW_PROFILE_RENAME=false
 ALLOWED_PROFILE_RENAMES=RoscomVPN:swiftless-routing
 CRON_SCHEDULE=30 4 * * *
-TZ=UTC
+TZ=Europe/Moscow
 ```
 
 Remnawave - Response Rule:
