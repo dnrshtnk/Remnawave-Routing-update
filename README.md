@@ -28,12 +28,14 @@ git clone https://github.com/dnrshtnk/Remnawave-Routing-update.git
 cd Remnawave-Routing-update
 cp .env.example .env
 nano .env
+```
+```bash
 mkdir -p backups
 docker compose up -d --build
 docker compose logs -f routing-updater
 ```
 
-Пример для локальной панели Remnawave:
+Пример для локальной панели Remnawave .env:
 
 ```env
 REMNA_BASE_URL=http://remnawave:3000/api
@@ -56,9 +58,9 @@ CRON_SCHEDULE=30 4 * * *
 TZ=UTC
 ```
 
-Response Rule:
+Remnawave - Response Rule:
 
-``` Remnawave - Response Rule
+``` 
 {
   "version": "1",
   "rules": [
